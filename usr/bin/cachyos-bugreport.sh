@@ -96,11 +96,11 @@ $(dmesg)
 ____________________________________________
 journalctl of current boot
 
-$(journalctl -b -p 4..1)
+$(journalctl --no-hostname -b -p 4..1)
 ____________________________________________
 journalctl of previous boot
 
-$(journalctl -b -1 -p 4..1 2>/dev/null || echo "No previous boot log available")
+$(journalctl --no-hostname -b -1 -p 4..1 2>/dev/null || echo "No previous boot log available")
 ____________________________________________
 
 Installed packages
@@ -110,39 +110,109 @@ $(get_installed_packages)
 EOF
 }
 
+emit_sensitive_values() {
+    local replacement="$1"
+    local value
+
+    while IFS= read -r value; do
+        [ -n "$value" ] && printf '%s\t%s\n' "$replacement" "$value"
+    done
+}
+
+collect_sensitive_values() {
+    local real_user="${SUDO_USER:-}"
+    local address_file
+    local machine_id_file
+
+    if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
+        { getent passwd "$real_user" 2>/dev/null || true; } |
+            cut -d: -f6 |
+            emit_sensitive_values '<home-dir-redacted>'
+        printf '%s\n' "$real_user" | emit_sensitive_values '<username-redacted>'
+    fi
+
+    if command -v ip >/dev/null; then
+        { ip -o address show 2>/dev/null || true; } |
+            awk '$2 != "lo" && ($3 == "inet" || $3 == "inet6") {sub(/\/.*/, "", $4); print $4}' |
+            emit_sensitive_values '<ip-address-redacted>'
+    fi
+
+    for address_file in /sys/class/net/*/address; do
+        if [ -r "$address_file" ]; then
+            sed '/^00:00:00:00:00:00$/d' "$address_file"
+        fi
+    done | emit_sensitive_values '<mac-address-redacted>'
+
+    for machine_id_file in /etc/machine-id /var/lib/dbus/machine-id; do
+        if [ -r "$machine_id_file" ]; then
+            sed -n '1p' "$machine_id_file"
+        fi
+    done | sort -u | emit_sensitive_values '<machine-id-redacted>'
+
+    if command -v lsblk >/dev/null; then
+        { lsblk -rno UUID 2>/dev/null || true; } | emit_sensitive_values '<uuid-redacted>'
+    fi
+
+    if command -v nmcli >/dev/null; then
+        { nmcli --terse --escape no --fields TYPE,NAME connection show 2>/dev/null || true; } |
+            sed -nE 's/^(802-11-wireless|wifi)://p' |
+            emit_sensitive_values '<ssid-redacted>'
+    fi
+
+    if command -v udevadm >/dev/null; then
+        { udevadm info --export-db 2>/dev/null || true; } |
+            sed -n 's/^E: ID_SERIAL_SHORT=//p' |
+            emit_sensitive_values '<usb-serial-redacted>'
+    fi
+}
+
 redact() {
     echo "Redacting personal information..."
 
     local sed_args=()
+    local replacement
+    local value
 
-    # Escape a literal string for use in a sed pattern (] must be first in class)
-    sed_escape() { printf '%s\n' "$1" | sed 's/[][\\.^$*|]/\\&/g'; }
+    # Escape a literal string for use in an extended sed pattern.
+    sed_escape() { printf '%s\n' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
 
-    # Redact hostname (appears in uname, dmesg, journalctl)
-    local hn
-    hn=$(hostname)
-    sed_args+=(-e "s|\b$(sed_escape "$hn")\b|<hostname-redacted>|g")
+    while IFS=$'\t' read -r replacement value; do
+        [ -n "$value" ] || continue
+        if [ "$replacement" = '<username-redacted>' ]; then
+            sed_args+=(-e "s|\\b$(sed_escape "$value")\\b|${replacement}|g")
+        elif [ "$replacement" = '<ssid-redacted>' ]; then
+            sed_args+=(-e "/(SSID|ssid|access point|connected|connection|NetworkManager|wifi|Wi-Fi)/ s|$(sed_escape "$value")|${replacement}|g")
+        else
+            sed_args+=(-e "s|$(sed_escape "$value")|${replacement}|g")
+        fi
+    done < <(collect_sensitive_values)
 
-    # Redact real username and home directory (SUDO_USER is set when run via sudo)
-    local real_user="${SUDO_USER:-}"
-    if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
-        local escaped_user
-        escaped_user=$(sed_escape "$real_user")
-        sed_args+=(-e "s|/home/${escaped_user}\b|<home-dir-redacted>|g")
-        sed_args+=(-e "s|\b${escaped_user}\b|<username-redacted>|g")
-    fi
+    # Hostnames occur in fixed report fields. Avoid replacing generic hostnames in
+    # useful strings such as linux-cachyos and cachyos-v4.
+    sed_args+=(-e 's#^(uname: [^[:space:]]+[[:space:]]+)[^[:space:]]+#\1<hostname-redacted>#')
+    sed_args+=(-e 's#((hostname|Host Name)[=:][[:space:]]*)[^[:space:]]+#\1<hostname-redacted>#g')
+    sed_args+=(-e 's#((Set hostname to|hostname set to)[[:space:]]+)[^[:space:].]+#\1<hostname-redacted>#gI')
 
-    # Redact IPv4 addresses (inxi -z handles its own output; this covers dmesg/journal)
-    sed_args+=(-e 's/\b\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\b/<ipv4-redacted>/g')
+    # Previous-boot values may no longer be present on the machine. Redact only
+    # structured network, Wi-Fi and USB fields instead of guessing globally.
+    sed_args+=(-e 's#\b(SRC|DST)=[^[:space:]]+#\1=<ip-address-redacted>#g')
+    sed_args+=(-e 's#((ip_address|address|gateway|nameserver)[=:][>[:space:]]*)[0-9]{1,3}(\.[0-9]{1,3}){3}#\1<ip-address-redacted>#g')
+    sed_args+=(-e 's#((ip_address|address|gateway|nameserver)[=:][>[:space:]]*)[0-9A-Fa-f]*:[0-9A-Fa-f:.%]+#\1<ip-address-redacted>#g')
+    sed_args+=(-e "s#((SSID|ssid)[=:][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:]]+)#\\1<ssid-redacted>#g")
+    sed_args+=(-e "s#((access point)[[:space:]]+)'[^']*'#\\1'<ssid-redacted>'#g")
+    sed_args+=(-e 's#((SerialNumber|Serial Number|ID_SERIAL_SHORT)[=:][[:space:]]*)[^[:space:]]+#\1<usb-serial-redacted>#g')
+    sed_args+=(-e 's#((machine-id|Machine ID)[=:][[:space:]]*)[[:xdigit:]]{32}#\1<machine-id-redacted>#g')
 
-    # Redact MAC addresses (fallback for anything inxi -z may have missed)
-    sed_args+=(-e 's/\b\([0-9a-fA-F]\{2\}:\)\{5\}[0-9a-fA-F]\{2\}\b/<mac-address-redacted>/g')
-
-    # Redact email addresses
-    sed_args+=(-e 's/[a-zA-Z0-9._%+-]\+@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,\}/<email-address-redacted>/g')
+    # These formats are distinctive, or explicitly requested for all sections.
+    sed_args+=(-e 's#(^|[^[:xdigit:]:])([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}([^[:xdigit:]:]|$)#\1<mac-address-redacted>\3#g')
+    sed_args+=(-e 's#\b[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}\b#<uuid-redacted>#g')
+    sed_args+=(-e 's#\b((PART)?UUID=)[0-9A-Fa-f-]+#\1<uuid-redacted>#g')
+    sed_args+=(-e 's#(/dev/disk/by-uuid/)[^[:space:]]+#\1<uuid-redacted>#g')
+    sed_args+=(-e 's#"file://[^"]*"#"file://<path-redacted>"#g')
+    sed_args+=(-e 's#[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}#<email-address-redacted>#g')
 
     # Single sed pass for all substitutions
-    sed -i "${sed_args[@]}" "$LOG_FILENAME"
+    sed -Ei "${sed_args[@]}" "$LOG_FILENAME"
 }
 
 upload() {
@@ -155,9 +225,11 @@ upload() {
 
 }
 
-check_root
-check_oldlog
-check_wpermission
-bugreport
-redact
-upload
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    check_root
+    check_oldlog
+    check_wpermission
+    bugreport
+    redact
+    upload
+fi
