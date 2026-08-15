@@ -216,10 +216,13 @@ redact() {
             sed_args+=(-e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")(-[0-9]+)?([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\3#g" \
                        -e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")(-[0-9]+)?([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\3#g")
         elif [ "$replacement" = '<ssid-redacted>' ]; then
-            if printf '%s\n' "$value" | grep -Eqi '^(the|and|for|are|but|not|you|all|any|can|had|her|was|one|our|out|day|get|has|him|his|how|man|new|now|old|see|two|way|who|boy|did|its|let|put|say|she|too|use|off|yes|true|set|raw|end|low|top|bad|run|try|ask)$'; then
-                continue
+            if printf '%s\n' "$value" | grep -Eqi '^(the|and|for|are|but|not|you|all|any|can|had|her|was|one|our|out|day|get|has|him|his|how|man|new|now|old|see|two|way|who|boy|did|its|let|put|say|she|too|use|off|yes|true|set|raw|end|low|top|bad|run|try|ask|this)$'; then
+                sed_args+=(-e "s#((SSID|ssid|access point|connected to|connecting to|associated with|association with|network|connection|saw)[=:[:space:]]+['\"]?)$(sed_escape "$value")(['\"]?([^a-zA-Z0-9]|$))#\\1${replacement}\\3#gI" \
+                           -e "s#((SSID|ssid|access point|connected to|connecting to|associated with|association with|network|connection|saw)[=:[:space:]]+['\"]?)$(sed_escape "$value")(['\"]?([^a-zA-Z0-9]|$))#\\1${replacement}\\3#gI")
+            else
+                sed_args+=(-e "/(SSID|ssid|access point|connected to|associated with|association with|connection|NetworkManager|wlan[0-9]|wifi|Wi-Fi)/I s#(^|[^a-zA-Z0-9])$(sed_escape "$value")([^a-zA-Z0-9]|$)#\\1${replacement}\\2#g" \
+                           -e "/(SSID|ssid|access point|connected to|associated with|association with|connection|NetworkManager|wlan[0-9]|wifi|Wi-Fi)/I s#(^|[^a-zA-Z0-9])$(sed_escape "$value")([^a-zA-Z0-9]|$)#\\1${replacement}\\2#g")
             fi
-            sed_args+=(-e "/(SSID|ssid|access point|connected to|network|wifi|Wi-Fi|wlan)/ s#(^|[^a-zA-Z0-9])$(sed_escape "$value")([^a-zA-Z0-9]|$)#\\1${replacement}\\2#g")
         elif [ "$replacement" = '<home-dir-redacted>' ]; then
             sed_args+=(-e "s#$(sed_escape "$value")\\b#${replacement}#g")
         else
@@ -233,15 +236,15 @@ redact() {
     sed_args+=(-e 's#((hostname|Host Name)[=:][[:space:]]*)[^[:space:]]+#\1<hostname-redacted>#g')
     sed_args+=(-e 's#((Set hostname to|hostname set to)[[:space:]]+)[^[:space:].]+#\1<hostname-redacted>#gI')
 
-    # Structured network, Wi-Fi and USB fields
+    # Structured network fields with shared valid IPv4 octet semantics
     sed_args+=(-e 's#\b(SRC|DST)=[^[:space:]]+#\1=<ip-address-redacted>#g')
-    sed_args+=(-e 's#((ip_address|address|gateway|nameserver|endpoint)[=:][>[:space:]]*)[0-9]{1,3}(\.[0-9]{1,3}){3}#\1<ip-address-redacted>#g')
+    sed_args+=(-e 's#\b(([a-zA-Z0-9_]*(ip_address|address|gateway|nameserver|endpoint|server|host|mirror|contacted|firmware))[=:][>[:space:]]*)(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}(:[0-9]+)?#\1<ip-address-redacted>#gI')
+    sed_args+=(-e 's#\b(contacted|endpoint|server|mirror)[[:space:]]+(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}(:[0-9]+)?#\1 <ip-address-redacted>#gI')
     sed_args+=(-e 's#((ip_address|address|gateway|nameserver|endpoint)[=:][>[:space:]]*)[0-9A-Fa-f]*:[0-9A-Fa-f:.%]+#\1<ip-address-redacted>#g')
+    sed_args+=(-e 's#\b(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}:[0-9]{2,5}\b#<ip-address-redacted>#g')
 
-    # IPv4 address redaction with diagnostic version protection and valid octet validation (0-255)
-    sed_args+=(-e 's#\b(version|firmware|revision|bcdDevice|release|build|rev|ver)[[:space:]:=]+([0-9]+(\.[0-9]+){3})\b#\1 __VER__\2__END__#gI')
-    sed_args+=(-e 's#\b(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}(:[0-9]+)?\b#<ip-address-redacted>#g')
-    sed_args+=(-e 's#__VER__([0-9]+(\.[0-9]+){3})__END__#\1#g')
+    # Standalone valid IPv4 address redaction preserving diagnostic dotted releases/versions
+    sed_args+=(-e '/\b(version|release|kernel|bcdDevice|revision)([[:space:]]+(is|version|release|tag|of))?[[:space:]:=]+[0-9]+(\.[0-9]+){3}\b/I! s#\b(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}\b#<ip-address-redacted>#g')
 
     # Wi-Fi and USB fields
     sed_args+=(-e "s#((SSID|ssid)[=:][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:]]+)#\\1<ssid-redacted>#g")
@@ -249,11 +252,12 @@ redact() {
     sed_args+=(-e 's#((SerialNumber|Serial Number|ID_SERIAL_SHORT)[=:][[:space:]]*)[^[:space:]]+#\1<usb-serial-redacted>#g')
     sed_args+=(-e 's#((machine-id|Machine ID)[=:][[:space:]]*)[[:xdigit:]]{32}#\1<machine-id-redacted>#g')
 
-    # MAC addresses: explicit Netfilter MAC= chains + labeled mac: fields + standalone MAC addresses (ignoring longer colon-hex chains)
+    # MAC addresses: explicit Netfilter MAC= chains + labeled fields (with case/prefix support) + standalone MACs (preserving longer colon-hex/IPv6)
     sed_args+=(-e 's#\bMAC=([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}:([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}#MAC=<mac-address-redacted>:<mac-address-redacted>#g')
-    sed_args+=(-e 's#\b((MAC|mac|HWaddr|hwaddr|ether|address|addr)[=:][[:space:]]*)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b#\1<mac-address-redacted>#g')
-    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b([^0-9A-Fa-f:]|$)#\1<mac-address-redacted>\3#g')
-    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b([^0-9A-Fa-f:]|$)#\1<mac-address-redacted>\3#g')
+    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])([a-zA-Z0-9_]*(MAC|mac|HWaddr|hwaddr|ether|address|addr)[=:][[:space:]]*)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}([^0-9A-Fa-f:]|$)#\1\2<mac-address-redacted>\5#gI')
+    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])([a-zA-Z0-9_]*(MAC|mac|HWaddr|hwaddr|ether|address|addr)[=:][[:space:]]*)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}([^0-9A-Fa-f:]|$)#\1\2<mac-address-redacted>\5#gI')
+    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}([^0-9A-Fa-f:]|$)#\1<mac-address-redacted>\3#g')
+    sed_args+=(-e 's#(^|[^0-9A-Fa-f:])([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}([^0-9A-Fa-f:]|$)#\1<mac-address-redacted>\3#g')
 
     # UUIDs, URLs, Email
     sed_args+=(-e 's#\b[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}\b#<uuid-redacted>#g')

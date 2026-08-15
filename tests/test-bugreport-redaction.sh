@@ -25,6 +25,7 @@ collect_sensitive_values() {
 <ssid-redacted>	Lab!
 <ssid-redacted>	-foo-
 <ssid-redacted>	Cafe:Lab
+<ssid-redacted>	this
 <usb-serial-redacted>	CURRENT-USB-123
 EOF
 }
@@ -35,9 +36,12 @@ uname: Linux cachyos 7.1.6-1-cachyos #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux
 repo cachyos-v4 package linux-cachyos kernel 7.1.6-1-cachyos
 firmware version 6.18.44.1 and bcdDevice 1.02.03.04
 Linux diagnostic release 6.18.44.1
+Linux kernel 6.18.44.1 loaded
+Linux version is 6.18.44.1
+firmware: 198.51.100.24 download mirror unavailable
 firmware updater contacted 198.51.100.23
 revision service endpoint 203.0.113.7
-invalid IP 999.999.999.999
+address=999.999.999.999
 Host Name: cachyos
 systemd: Set hostname to cachyos.
 (linux-cachyos@cachyos)
@@ -45,11 +49,15 @@ home=/home/alex/config user=alex allocation=ok /home/alexander
 current IPv4=192.0.2.44 current IPv6=2001:db8::44
 MAC=02:11:22:33:44:55 machine=0123456789abcdef0123456789abcdef
 mac:AA:BB:CC:DD:EE:FF and mac: BB:CC:DD:EE:FF:00
+Mac:11:22:33:44:55:66 and wifi_mac:22:33:44:55:66:77
+addr=00:11:22:33:44:55:66 and device_hwaddr=33:44:55:66:77:88
 filesystem UUID=ABCD-1234 standard=123e4567-e89b-12d3-a456-426614174000 historical PARTUUID=DEAD-BEEF ID_FS_UUID=FEED-CAFE
 connected to cachyos-ap; SerialNumber: CURRENT-USB-123
-wifi connected to Lab! in the office
+wifi saw Lab! Lab! nearby
+wifi saw Cafe:Lab Cafe:Lab nearby
+NetworkManager: association with Lab! established
 wifi connected to -foo- in the office
-wifi connected to Cafe:Lab in the office
+wifi this interface connected normally
 old firewall SRC=198.51.100.22 DST=2001:db8::99 MAC=00:11:22:33:44:55:66:77:88:99:aa:bb:08:00
 old lease address=10.2.3.4 gateway=2001:db8::1
 old wifi SSID="Old Cafe" and access point 'Older Cafe'
@@ -62,13 +70,13 @@ nvme nvme0: pci function 0000:10:00.0
 amdgpu 0000:7a:00.3: amdgpu: Fetched VBIOS from VFCT
 pcieport 0000:00:1c.4: AER: Corrected error received
 NetworkManager: device eth0 connected; carrier on
-NetworkManager: the interface connected normally
 CPU0: Thermal 100 C
 AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 22:33:44:55:66:77
 route fe80:00:11:22:33:44:55:66 metric 100
 nfs: server 198.51.100.22 not responding
 Failed to connect to 10.0.0.5:8080
 WireGuard endpoint 203.0.113.5:51820
+invalid IP 999.999.999.999
 EOF
 
 redact >/dev/null
@@ -78,9 +86,12 @@ uname: Linux <hostname-redacted> 7.1.6-1-cachyos #1 SMP PREEMPT_DYNAMIC x86_64 G
 repo cachyos-v4 package linux-cachyos kernel 7.1.6-1-cachyos
 firmware version 6.18.44.1 and bcdDevice 1.02.03.04
 Linux diagnostic release 6.18.44.1
+Linux kernel 6.18.44.1 loaded
+Linux version is 6.18.44.1
+firmware: <ip-address-redacted> download mirror unavailable
 firmware updater contacted <ip-address-redacted>
 revision service endpoint <ip-address-redacted>
-invalid IP 999.999.999.999
+address=999.999.999.999
 Host Name: <hostname-redacted>
 systemd: Set hostname to <hostname-redacted>.
 (linux-cachyos@<hostname-redacted>)
@@ -88,11 +99,15 @@ home=<home-dir-redacted>/config user=<username-redacted> allocation=ok /home/ale
 current IPv4=<ip-address-redacted> current IPv6=<ip-address-redacted>
 MAC=<mac-address-redacted> machine=<machine-id-redacted>
 mac:<mac-address-redacted> and mac: <mac-address-redacted>
+Mac:<mac-address-redacted> and wifi_mac:<mac-address-redacted>
+addr=00:11:22:33:44:55:66 and device_hwaddr=<mac-address-redacted>
 filesystem UUID=<uuid-redacted> standard=<uuid-redacted> historical PARTUUID=<uuid-redacted> ID_FS_UUID=<uuid-redacted>
 connected to <ssid-redacted>; SerialNumber: <usb-serial-redacted>
+wifi saw <ssid-redacted> <ssid-redacted> nearby
+wifi saw <ssid-redacted> <ssid-redacted> nearby
+NetworkManager: association with <ssid-redacted> established
 wifi connected to <ssid-redacted> in the office
-wifi connected to <ssid-redacted> in the office
-wifi connected to <ssid-redacted> in the office
+wifi this interface connected normally
 old firewall SRC=<ip-address-redacted> DST=<ip-address-redacted> MAC=<mac-address-redacted>:<mac-address-redacted>:08:00
 old lease address=<ip-address-redacted> gateway=<ip-address-redacted>
 old wifi SSID=<ssid-redacted> and access point '<ssid-redacted>'
@@ -105,13 +120,13 @@ nvme nvme0: pci function 0000:10:00.0
 amdgpu 0000:7a:00.3: amdgpu: Fetched VBIOS from VFCT
 pcieport 0000:00:1c.4: AER: Corrected error received
 NetworkManager: device eth0 connected; carrier on
-NetworkManager: the interface connected normally
 CPU0: Thermal 100 C
 <mac-address-redacted> <mac-address-redacted> <mac-address-redacted>
 route fe80:00:11:22:33:44:55:66 metric 100
 nfs: server <ip-address-redacted> not responding
 Failed to connect to <ip-address-redacted>
 WireGuard endpoint <ip-address-redacted>
+invalid IP 999.999.999.999
 EOF
 
 diff -u "$test_dir/expected.log" "$LOG_FILENAME"
