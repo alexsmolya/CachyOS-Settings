@@ -110,9 +110,11 @@ $(get_installed_packages)
 EOF
 }
 
+CLEANUP_ON_ERROR=0
+
 cleanup() {
     local exit_code=$?
-    if [ $exit_code -ne 0 ] && [ -n "${LOG_FILENAME:-}" ] && [ -f "$LOG_FILENAME" ]; then
+    if [ $exit_code -ne 0 ] && [ "${CLEANUP_ON_ERROR:-0}" -eq 1 ] && [ -n "${LOG_FILENAME:-}" ] && [ -f "$LOG_FILENAME" ]; then
         rm -f "$LOG_FILENAME" 2>/dev/null || true
     fi
 }
@@ -122,7 +124,7 @@ emit_sensitive_values() {
     local value
 
     while IFS= read -r value; do
-        [ -n "$value" ] && printf '%s\t%s\n' "$replacement" "$value"
+        [ -n "$value" ] && [ "${#value}" -ge 3 ] && printf '%s\t%s\n' "$replacement" "$value"
     done
 }
 
@@ -176,10 +178,10 @@ collect_sensitive_values() {
     if command -v nmcli >/dev/null; then
         local uuid name ssid
         while IFS=: read -r uuid name; do
-            [ -n "$name" ] && printf '%s\n' "$name"
+            [ -n "$name" ] && [ "${#name}" -ge 3 ] && printf '%s\n' "$name"
             if [ -n "$uuid" ]; then
-                ssid="$(nmcli -g 802-11-wireless.ssid connection show "$uuid" 2>/dev/null || true)"
-                [ -n "$ssid" ] && printf '%s\n' "$ssid"
+                ssid="$(nmcli --terse --escape no -g 802-11-wireless.ssid connection show "$uuid" 2>/dev/null || true)"
+                [ -n "$ssid" ] && [ "${#ssid}" -ge 3 ] && printf '%s\n' "$ssid"
             fi
         done < <({ nmcli --terse --escape no --fields TYPE,UUID,NAME connection show 2>/dev/null || true; } | sed -nE 's/^(802-11-wireless|wifi)://p') |
             emit_sensitive_values '<ssid-redacted>'
@@ -188,7 +190,7 @@ collect_sensitive_values() {
     if command -v udevadm >/dev/null; then
         { udevadm info --export-db 2>/dev/null || true; } |
             sed -n 's/^E: ID_SERIAL_SHORT=//p' |
-            grep -Ev '^[0-9a-fA-F]{2,4}:|^[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$|^0+$|^[0-9]{1,2}$|^9876543210$|^1234567890$' |
+            grep -Ev '^[0-9a-fA-F]{2,4}:|\.[0-9a-fA-F]$|^0+$|^[0-9]{1,3}$|^(.)\1+$|^123456|^987654|^012345|^(19|20)[0-9]{6,}$' |
             emit_sensitive_values '<usb-serial-redacted>'
     fi
 }
@@ -206,17 +208,17 @@ redact() {
 
     while IFS=$'\t' read -r replacement value; do
         [ -n "$value" ] || continue
+        [ "${#value}" -ge 3 ] || continue
         if [ "$replacement" = '<username-redacted>' ]; then
             sed_args+=(-e "s#\\b$(sed_escape "$value")\\b#${replacement}#g")
         elif [ "$replacement" = '<hostname-redacted>' ]; then
-            sed_args+=(-e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\2#g" \
-                       -e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\2#g")
+            sed_args+=(-e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")(-[0-9]+)?([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\3#g" \
+                       -e "s#(^|[^a-zA-Z0-9_/-])$(sed_escape "$value")(-[0-9]+)?([^a-zA-Z0-9_/-]|$)#\\1${replacement}\\3#g")
         elif [ "$replacement" = '<ssid-redacted>' ]; then
-            sed_args+=(-e "/(SSID|ssid|access point|connected|connection|NetworkManager|wifi|Wi-Fi)/ s#\\b$(sed_escape "$value")\\b#${replacement}#g")
+            sed_args+=(-e "/(SSID|ssid|access point|connected to|connection|NetworkManager|wifi|Wi-Fi)/ s#\\b$(sed_escape "$value")\\b#${replacement}#g")
         elif [ "$replacement" = '<home-dir-redacted>' ]; then
             sed_args+=(-e "s#$(sed_escape "$value")\\b#${replacement}#g")
         else
-            [ "${#value}" -ge 3 ] || continue
             sed_args+=(-e "s#\\b$(sed_escape "$value")\\b#${replacement}#g")
         fi
     done < <(collect_sensitive_values)
@@ -232,15 +234,18 @@ redact() {
     sed_args+=(-e 's#\b(SRC|DST)=[^[:space:]]+#\1=<ip-address-redacted>#g')
     sed_args+=(-e 's#((ip_address|address|gateway|nameserver|endpoint)[=:][>[:space:]]*)[0-9]{1,3}(\.[0-9]{1,3}){3}#\1<ip-address-redacted>#g')
     sed_args+=(-e 's#((ip_address|address|gateway|nameserver|endpoint)[=:][>[:space:]]*)[0-9A-Fa-f]*:[0-9A-Fa-f:.%]+#\1<ip-address-redacted>#g')
-    sed_args+=(-e '/(version|firmware|revision|bcdDevice)/! s#\b(10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[0-1])|192\.168|100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])|169\.254)\.[0-9]{1,3}\.[0-9]{1,3}(:[0-9]+)?\b#<ip-address-redacted>#g')
-    sed_args+=(-e '/(version|firmware|revision|bcdDevice)/! s#\b[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{2,5}\b#<ip-address-redacted>#g')
+    sed_args+=(-e '/(version|firmware|revision|bcdDevice)/! s#\b([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?\b#<ip-address-redacted>#g')
     sed_args+=(-e "s#((SSID|ssid)[=:][[:space:]]*)(\"[^\"]*\"|'[^']*'|[^[:space:]]+)#\\1<ssid-redacted>#g")
     sed_args+=(-e "s#((access point)[[:space:]]+)'[^']*'#\\1'<ssid-redacted>'#g")
     sed_args+=(-e 's#((SerialNumber|Serial Number|ID_SERIAL_SHORT)[=:][[:space:]]*)[^[:space:]]+#\1<usb-serial-redacted>#g')
     sed_args+=(-e 's#((machine-id|Machine ID)[=:][[:space:]]*)[[:xdigit:]]{32}#\1<machine-id-redacted>#g')
 
-    # These formats are distinctive, or explicitly requested for all sections.
-    sed_args+=(-e 's#\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b#<mac-address-redacted>#g')
+    # Netfilter MAC= chains + standalone MAC addresses (ignoring longer colon-hex chains)
+    sed_args+=(-e 's#\bMAC=([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}:([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}#MAC=<mac-address-redacted>:<mac-address-redacted>#g')
+    sed_args+=(-e 's#(^|[^:])\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b([^:]|$)#\1<mac-address-redacted>\3#g')
+    sed_args+=(-e 's#(^|[^:])\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b([^:]|$)#\1<mac-address-redacted>\3#g')
+
+    # UUIDs, URLs, Email
     sed_args+=(-e 's#\b[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}\b#<uuid-redacted>#g')
     sed_args+=(-e 's#(^|[^a-zA-Z0-9])((PART|ID_FS_)?UUID=)[0-9A-Fa-f-]+#\1\2<uuid-redacted>#g')
     sed_args+=(-e 's#(/dev/disk/by-uuid/)[^[:space:]]+#\1<uuid-redacted>#g')
@@ -249,6 +254,7 @@ redact() {
 
     # Single sed pass for all substitutions
     sed -Ei "${sed_args[@]}" "$LOG_FILENAME"
+    CLEANUP_ON_ERROR=0
 }
 
 upload() {
@@ -266,6 +272,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     check_root
     check_oldlog
     check_wpermission
+    CLEANUP_ON_ERROR=1
     bugreport
     redact
     upload

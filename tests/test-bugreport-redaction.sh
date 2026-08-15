@@ -10,7 +10,7 @@ original_collect_sensitive_values=$(declare -f collect_sensitive_values)
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 
-# --- Test 1: Main redaction pass covering all sensitive data classes ---
+# --- Test 1: Main redaction pass covering all sensitive data classes & edge cases ---
 collect_sensitive_values() {
     cat <<'EOF'
 <home-dir-redacted>	/home/alex
@@ -55,8 +55,10 @@ pcieport 0000:00:1c.4: AER: Corrected error received
 NetworkManager: device eth0 connected; carrier on
 CPU0: Thermal 100 C
 AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 22:33:44:55:66:77
-nfs: server 192.168.1.50 not responding
+route fe80:00:11:22:33:44:55:66 metric 100
+nfs: server 198.51.100.22 not responding
 Failed to connect to 10.0.0.5:8080
+WireGuard endpoint 203.0.113.5:51820
 EOF
 
 redact >/dev/null
@@ -84,16 +86,18 @@ xhci_hcd 0000:0e:00.0: xHCI Host Controller
 nvme nvme0: pci function 0000:10:00.0
 amdgpu 0000:7a:00.3: amdgpu: Fetched VBIOS from VFCT
 pcieport 0000:00:1c.4: AER: Corrected error received
-NetworkManager: device eth0 connected; carrier <ssid-redacted>
+NetworkManager: device eth0 connected; carrier on
 CPU0: Thermal 100 C
 <mac-address-redacted> <mac-address-redacted> <mac-address-redacted>
+route fe80:00:11:22:33:44:55:66 metric 100
 nfs: server <ip-address-redacted> not responding
 Failed to connect to <ip-address-redacted>
+WireGuard endpoint <ip-address-redacted>
 EOF
 
 diff -u "$test_dir/expected.log" "$LOG_FILENAME"
 
-# --- Test 2: Custom hostname (petes-laptop) redaction across non-fixed positions ---
+# --- Test 2: Custom hostname (petes-laptop) and Avahi conflict suffix (petes-laptop-2) ---
 collect_sensitive_values() {
     cat <<'EOF'
 <hostname-redacted>	petes-laptop
@@ -112,17 +116,17 @@ redact >/dev/null
 
 cat >"$test_dir/hostname-custom-expected.log" <<'EOF'
 NetworkManager[689]: <info> hostname changed from "localhost" to "<hostname-redacted>"
-avahi-daemon[702]: Host name conflict, retrying with petes-laptop-2
+avahi-daemon[702]: Host name conflict, retrying with <hostname-redacted>
 kernel: Linux version 7.1.6-1-cachyos (linux-cachyos@<hostname-redacted>) #1
 dbus-daemon: [session uid=1000 pid=900] on <hostname-redacted>
 EOF
 
 diff -u "$test_dir/hostname-custom-expected.log" "$LOG_FILENAME"
 
-# --- Test 3: Collection mock validations (filtering PCI BDF, nmcli SSID, user fallback) ---
+# --- Test 3: Collection mock validations (filtering PCI BDF, date/timestamp serials, nmcli contract, user detection) ---
 eval "$original_collect_sensitive_values"
 
-# Test udevadm PCI address / generic serial filtering
+# Test udevadm PCI address / generic / timestamp serial filtering
 SUDO_USER=root
 udevadm() {
     printf '%s\n' \
@@ -130,8 +134,12 @@ udevadm() {
         'E: ID_SERIAL_SHORT=0000:10:00.0' \
         'E: ID_SERIAL_SHORT=000000000' \
         'E: ID_SERIAL_SHORT=9876543210' \
+        'E: ID_SERIAL_SHORT=1234567890' \
         'E: ID_SERIAL_SHORT=0' \
-        'E: ID_SERIAL_SHORT=VALID-USB-DEVICE'
+        'E: ID_SERIAL_SHORT=202404073115' \
+        'E: ID_SERIAL_SHORT=20231122' \
+        'E: ID_SERIAL_SHORT=VALID-USB-DEVICE' \
+        'E: ID_SERIAL_SHORT=SN12345678'
 }
 ip() { :; }
 lsblk() { :; }
@@ -141,19 +149,25 @@ inventory=$(collect_sensitive_values)
 ! grep -q '0000:0e:00.0' <<<"$inventory"
 ! grep -q '000000000' <<<"$inventory"
 ! grep -q '9876543210' <<<"$inventory"
+! grep -q '202404073115' <<<"$inventory"
+! grep -q $'\t0$' <<<"$inventory"
 grep -Fxq $'<usb-serial-redacted>\tVALID-USB-DEVICE' <<<"$inventory"
+grep -Fxq $'<usb-serial-redacted>\tSN12345678' <<<"$inventory"
 
-# Test nmcli profile name and distinct SSID collection
+# Test nmcli contract with --escape no and SSID with colons
 nmcli() {
-    if [ "${1:-}" = "--terse" ]; then
+    if [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "--fields" ]; then
         printf '%s\n' '802-11-wireless:uuid-123:My Profile 1'
-    elif [ "${1:-}" = "-g" ]; then
-        printf '%s\n' 'Actual Broadcast SSID'
+    elif [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "-g" ] && [ "${5:-}" = "802-11-wireless.ssid" ]; then
+        printf '%s\n' 'Cafe:Lab'
+    else
+        echo "nmcli called with invalid arguments: $*" >&2
+        return 1
     fi
 }
 inventory=$(collect_sensitive_values)
 grep -Fxq $'<ssid-redacted>\tMy Profile 1' <<<"$inventory"
-grep -Fxq $'<ssid-redacted>\tActual Broadcast SSID' <<<"$inventory"
+grep -Fxq $'<ssid-redacted>\tCafe:Lab' <<<"$inventory"
 
 # Test user detection fallback with PKEXEC_UID
 unset SUDO_USER || true
@@ -172,7 +186,42 @@ inventory=$(collect_sensitive_values)
 grep -Fxq $'<username-redacted>\tpkexec_user' <<<"$inventory"
 grep -Fxq $'<home-dir-redacted>\t/home/pkexec_user' <<<"$inventory"
 
-# --- Test 4: Empty inventory degradation ---
+# --- Test 4: EXIT cleanup trap behavior ---
+trap_test_file="$test_dir/preexisting.log"
+touch "$trap_test_file"
+
+# Scenario A: Non-zero exit before bugreport() starts (CLEANUP_ON_ERROR=0) must preserve existing file
+LOG_FILENAME="$trap_test_file"
+CLEANUP_ON_ERROR=0
+(
+    exit_with_error() { return 1; }
+    exit_with_error || cleanup
+) || true
+[ -f "$trap_test_file" ]
+
+# Scenario B: Non-zero exit after bugreport() creates unredacted report (CLEANUP_ON_ERROR=1) must remove it
+LOG_FILENAME="$trap_test_file"
+CLEANUP_ON_ERROR=1
+(
+    exit_with_error() { return 1; }
+    exit_with_error || cleanup
+) || true
+[ ! -f "$trap_test_file" ]
+
+# Scenario C: Successful redact() disarms CLEANUP_ON_ERROR
+LOG_FILENAME="$test_dir/redacted_ok.log"
+printf '%s\n' 'some diagnostic line' >"$LOG_FILENAME"
+collect_sensitive_values() { :; }
+CLEANUP_ON_ERROR=1
+redact >/dev/null
+[ "$CLEANUP_ON_ERROR" -eq 0 ]
+(
+    exit_with_error() { return 1; }
+    exit_with_error || cleanup
+) || true
+[ -f "$LOG_FILENAME" ]
+
+# --- Test 5: Empty inventory degradation ---
 collect_sensitive_values() { :; }
 LOG_FILENAME="$test_dir/empty-inventory.log"
 printf '%s\n' 'plain diagnostic text remains intact' >"$LOG_FILENAME"
