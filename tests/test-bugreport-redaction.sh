@@ -22,9 +22,10 @@ collect_sensitive_values() {
 <machine-id-redacted>	0123456789abcdef0123456789abcdef
 <uuid-redacted>	ABCD-1234
 <ssid-redacted>	cachyos-ap
-<ssid-redacted>	on
+<ssid-redacted>	Lab!
+<ssid-redacted>	-foo-
+<ssid-redacted>	Cafe:Lab
 <usb-serial-redacted>	CURRENT-USB-123
-<usb-serial-redacted>	0
 EOF
 }
 
@@ -33,14 +34,22 @@ cat >"$LOG_FILENAME" <<'EOF'
 uname: Linux cachyos 7.1.6-1-cachyos #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux
 repo cachyos-v4 package linux-cachyos kernel 7.1.6-1-cachyos
 firmware version 6.18.44.1 and bcdDevice 1.02.03.04
+Linux diagnostic release 6.18.44.1
+firmware updater contacted 198.51.100.23
+revision service endpoint 203.0.113.7
+invalid IP 999.999.999.999
 Host Name: cachyos
 systemd: Set hostname to cachyos.
 (linux-cachyos@cachyos)
 home=/home/alex/config user=alex allocation=ok /home/alexander
 current IPv4=192.0.2.44 current IPv6=2001:db8::44
 MAC=02:11:22:33:44:55 machine=0123456789abcdef0123456789abcdef
+mac:AA:BB:CC:DD:EE:FF and mac: BB:CC:DD:EE:FF:00
 filesystem UUID=ABCD-1234 standard=123e4567-e89b-12d3-a456-426614174000 historical PARTUUID=DEAD-BEEF ID_FS_UUID=FEED-CAFE
 connected to cachyos-ap; SerialNumber: CURRENT-USB-123
+wifi connected to Lab! in the office
+wifi connected to -foo- in the office
+wifi connected to Cafe:Lab in the office
 old firewall SRC=198.51.100.22 DST=2001:db8::99 MAC=00:11:22:33:44:55:66:77:88:99:aa:bb:08:00
 old lease address=10.2.3.4 gateway=2001:db8::1
 old wifi SSID="Old Cafe" and access point 'Older Cafe'
@@ -53,6 +62,7 @@ nvme nvme0: pci function 0000:10:00.0
 amdgpu 0000:7a:00.3: amdgpu: Fetched VBIOS from VFCT
 pcieport 0000:00:1c.4: AER: Corrected error received
 NetworkManager: device eth0 connected; carrier on
+NetworkManager: the interface connected normally
 CPU0: Thermal 100 C
 AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 22:33:44:55:66:77
 route fe80:00:11:22:33:44:55:66 metric 100
@@ -67,14 +77,22 @@ cat >"$test_dir/expected.log" <<'EOF'
 uname: Linux <hostname-redacted> 7.1.6-1-cachyos #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux
 repo cachyos-v4 package linux-cachyos kernel 7.1.6-1-cachyos
 firmware version 6.18.44.1 and bcdDevice 1.02.03.04
+Linux diagnostic release 6.18.44.1
+firmware updater contacted <ip-address-redacted>
+revision service endpoint <ip-address-redacted>
+invalid IP 999.999.999.999
 Host Name: <hostname-redacted>
 systemd: Set hostname to <hostname-redacted>.
 (linux-cachyos@<hostname-redacted>)
 home=<home-dir-redacted>/config user=<username-redacted> allocation=ok /home/alexander
 current IPv4=<ip-address-redacted> current IPv6=<ip-address-redacted>
 MAC=<mac-address-redacted> machine=<machine-id-redacted>
+mac:<mac-address-redacted> and mac: <mac-address-redacted>
 filesystem UUID=<uuid-redacted> standard=<uuid-redacted> historical PARTUUID=<uuid-redacted> ID_FS_UUID=<uuid-redacted>
 connected to <ssid-redacted>; SerialNumber: <usb-serial-redacted>
+wifi connected to <ssid-redacted> in the office
+wifi connected to <ssid-redacted> in the office
+wifi connected to <ssid-redacted> in the office
 old firewall SRC=<ip-address-redacted> DST=<ip-address-redacted> MAC=<mac-address-redacted>:<mac-address-redacted>:08:00
 old lease address=<ip-address-redacted> gateway=<ip-address-redacted>
 old wifi SSID=<ssid-redacted> and access point '<ssid-redacted>'
@@ -87,6 +105,7 @@ nvme nvme0: pci function 0000:10:00.0
 amdgpu 0000:7a:00.3: amdgpu: Fetched VBIOS from VFCT
 pcieport 0000:00:1c.4: AER: Corrected error received
 NetworkManager: device eth0 connected; carrier on
+NetworkManager: the interface connected normally
 CPU0: Thermal 100 C
 <mac-address-redacted> <mac-address-redacted> <mac-address-redacted>
 route fe80:00:11:22:33:44:55:66 metric 100
@@ -154,14 +173,14 @@ inventory=$(collect_sensitive_values)
 grep -Fxq $'<usb-serial-redacted>\tVALID-USB-DEVICE' <<<"$inventory"
 grep -Fxq $'<usb-serial-redacted>\tSN12345678' <<<"$inventory"
 
-# Test nmcli contract with --escape no and SSID with colons
+# Test complete nmcli contract: 7 args for list, 8 args for ssid show "$uuid"
 nmcli() {
-    if [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "--fields" ]; then
+    if [ "$#" -eq 7 ] && [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "--fields" ] && [ "${5:-}" = "TYPE,UUID,NAME" ] && [ "${6:-}" = "connection" ] && [ "${7:-}" = "show" ]; then
         printf '%s\n' '802-11-wireless:uuid-123:My Profile 1'
-    elif [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "-g" ] && [ "${5:-}" = "802-11-wireless.ssid" ]; then
+    elif [ "$#" -eq 8 ] && [ "${1:-}" = "--terse" ] && [ "${2:-}" = "--escape" ] && [ "${3:-}" = "no" ] && [ "${4:-}" = "-g" ] && [ "${5:-}" = "802-11-wireless.ssid" ] && [ "${6:-}" = "connection" ] && [ "${7:-}" = "show" ] && [ "${8:-}" = "uuid-123" ]; then
         printf '%s\n' 'Cafe:Lab'
     else
-        echo "nmcli called with invalid arguments: $*" >&2
+        echo "nmcli mock failed: unexpected arguments ($#): $*" >&2
         return 1
     fi
 }
