@@ -262,4 +262,45 @@ printf '%s\n' 'plain diagnostic text remains intact' >"$LOG_FILENAME"
 redact >/dev/null
 grep -Fxq 'plain diagnostic text remains intact' "$LOG_FILENAME"
 
+# --- Test 6: Collector failures must fail closed before upload can be reached ---
+for failure_mode in immediate partial; do
+    LOG_FILENAME="$test_dir/collector-$failure_mode.log"
+    printf 'private WIFI-%s\n' "$failure_mode" >"$LOG_FILENAME"
+
+    if [ "$failure_mode" = immediate ]; then
+        collect_sensitive_values() { return 1; }
+    else
+        collect_sensitive_values() {
+            printf '%s\t%s\n' '<ssid-redacted>' WIFI-PARTIAL
+            return 1
+        }
+    fi
+
+    CLEANUP_ON_ERROR=1
+    if ( trap cleanup EXIT; redact >/dev/null ); then
+        echo "collector failure unexpectedly succeeded: $failure_mode" >&2
+        exit 1
+    fi
+    [ ! -f "$LOG_FILENAME" ]
+done
+
+# --- Test 7: Ignored final candidates do not make valid emission fail ---
+if ! emitted_values=$(printf '%s\n' valid-value no '' | emit_sensitive_values '<test-redacted>'); then
+    echo 'emit_sensitive_values rejected ignored final candidates' >&2
+    exit 1
+fi
+grep -Fxq $'<test-redacted>\tvalid-value' <<<"$emitted_values"
+[ "$(printf '%s\n' "$emitted_values" | wc -l)" -eq 1 ]
+
+# --- Test 8: Successful collection and redaction still work after fail-closed checks ---
+collect_sensitive_values() {
+    printf '%s\t%s\n' '<ssid-redacted>' WIFI-SUCCESS
+}
+LOG_FILENAME="$test_dir/success-after-failure.log"
+printf 'connected to WIFI-SUCCESS\n' >"$LOG_FILENAME"
+CLEANUP_ON_ERROR=1
+redact >/dev/null
+grep -Fxq 'connected to <ssid-redacted>' "$LOG_FILENAME"
+[ "$CLEANUP_ON_ERROR" -eq 0 ]
+
 printf '%s\n' 'bugreport redaction tests: PASS'

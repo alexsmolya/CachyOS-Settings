@@ -124,7 +124,9 @@ emit_sensitive_values() {
     local value
 
     while IFS= read -r value; do
-        [ -n "$value" ] && [ "${#value}" -ge 3 ] && printf '%s\t%s\n' "$replacement" "$value"
+        if [ -n "$value" ] && [ "${#value}" -ge 3 ]; then
+            printf '%s\t%s\n' "$replacement" "$value"
+        fi
     done
 }
 
@@ -204,8 +206,14 @@ redact() {
     echo "Redacting personal information..."
 
     local sed_args=()
+    local inventory
     local replacement
     local value
+
+    if ! inventory="$(collect_sensitive_values)"; then
+        echo "ERROR: could not enumerate values to redact; refusing to continue." >&2
+        return 1
+    fi
 
     while IFS=$'\t' read -r replacement value; do
         [ -n "$value" ] || continue
@@ -228,7 +236,7 @@ redact() {
         else
             sed_args+=(-e "s#\\b$(sed_escape "$value")\\b#${replacement}#g")
         fi
-    done < <(collect_sensitive_values)
+    done <<<"$inventory"
 
     # Hostnames occur in fixed report fields. Avoid replacing generic hostnames in
     # useful strings such as linux-cachyos and cachyos-v4.
