@@ -10,11 +10,64 @@ if ! powerprofilesctl list | grep -q 'performance:'; then
     exec "$@"
 fi
 
-# Set performance governors, as long the game is launched
-if [ -n "$GAME_PERFORMANCE_SCREENSAVER_ON" ]; then
-    exec powerprofilesctl launch -p performance \
-        -r "Launched with CachyOS game-performance utility" -- "$@"
-else
-    exec systemd-inhibit --why "CachyOS game-performance is running" powerprofilesctl launch \
-        -p performance -r "Launched with CachyOS game-performance utility" -- "$@"
+previous_profile=$(powerprofilesctl get 2>/dev/null) || previous_profile=
+
+# Do not change the profile when it cannot be read. In particular, do not
+# create a temporary launch hold whose cleanup profile is unknown.
+if [ -z "$previous_profile" ]; then
+    if [ -n "$GAME_PERFORMANCE_SCREENSAVER_ON" ]; then
+        exec "$@"
+    else
+        exec systemd-inhibit --why "CachyOS game-performance is running" -- "$@"
+    fi
 fi
+
+run_game() {
+    if [ -n "$GAME_PERFORMANCE_SCREENSAVER_ON" ]; then
+        "$@"
+    else
+        systemd-inhibit --why "CachyOS game-performance is running" -- "$@"
+    fi
+}
+
+restore_profile() {
+    powerprofilesctl set "$previous_profile" >/dev/null 2>&1
+}
+
+# powerprofilesctl launch creates a temporary hold and may restore balanced
+# when it exits. Avoid that hold when performance was already active.
+if [ "$previous_profile" = performance ]; then
+    if [ -n "$GAME_PERFORMANCE_SCREENSAVER_ON" ]; then
+        exec "$@"
+    else
+        exec systemd-inhibit --why "CachyOS game-performance is running" -- "$@"
+    fi
+fi
+
+if [ -n "$GAME_PERFORMANCE_SCREENSAVER_ON" ]; then
+    powerprofilesctl launch -p performance \
+        -r "Launched with CachyOS game-performance utility" -- "$@" &
+else
+    systemd-inhibit --why "CachyOS game-performance is running" powerprofilesctl launch \
+        -p performance -r "Launched with CachyOS game-performance utility" -- "$@" &
+fi
+child_pid=$!
+handle_signal() {
+    local signal=$1
+
+    trap - TERM INT
+    kill -"$signal" "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+    restore_profile
+    if [ "$signal" = INT ]; then
+        exit 130
+    fi
+    exit 143
+}
+
+trap 'handle_signal TERM' TERM
+trap 'handle_signal INT' INT
+trap 'restore_profile' EXIT
+wait "$child_pid"
+child_status=$?
+exit "$child_status"
